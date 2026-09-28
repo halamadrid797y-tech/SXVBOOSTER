@@ -20,13 +20,14 @@ jobs:
           echo "Jumlah file .zip di root repo: ${#zips[@]}"
           for z in "${zips[@]}"; do echo " - $z"; done
 
+          # Lebih dari satu zip = tidak jelas mana yang dipakai (zip lama bisa menimpa yang baru)
           if [ ${#zips[@]} -gt 1 ]; then
             echo "::error::Ada lebih dari satu file .zip di root repo. Hapus yang lama, sisakan hanya satu."
             exit 1
           fi
 
           if [ ${#zips[@]} -eq 1 ]; then
-            rm -rf app sxv-native
+            rm -rf app sxv-native            # buang sisa ekstrak lama agar tidak tercampur
             unzip -q -o "${zips[0]}"
             if [ -d "sxv-native" ]; then
               cp -a sxv-native/. .
@@ -80,13 +81,29 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build Debug APK
+        shell: bash
         run: |
+          set -o pipefail
           if [ -f "gradlew" ]; then
             chmod +x gradlew
-            ./gradlew assembleDebug --stacktrace
+            ./gradlew assembleDebug --console=plain 2>&1 | tee build.log
           else
-            gradle assembleDebug --stacktrace
+            gradle assembleDebug --console=plain 2>&1 | tee build.log
           fi
+
+      - name: Ringkasan error (hanya jika gagal)
+        if: failure()
+        run: |
+          {
+            echo "### Penyebab error"
+            echo '```'
+            grep -nE "^e: |error:|What went wrong|Execution failed|Could not resolve|FAILED" build.log | head -40 || true
+            echo '```'
+            echo "### 30 baris terakhir"
+            echo '```'
+            tail -n 30 build.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -103,4 +120,5 @@ jobs:
           path: |
             app/build/reports
             app/.cxx
+            build.log
           if-no-files-found: ignore
