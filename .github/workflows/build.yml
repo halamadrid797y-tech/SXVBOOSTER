@@ -1,0 +1,106 @@
+name: Build SXV Booster APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP Project
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          echo "Jumlah file .zip di root repo: ${#zips[@]}"
+          for z in "${zips[@]}"; do echo " - $z"; done
+
+          if [ ${#zips[@]} -gt 1 ]; then
+            echo "::error::Ada lebih dari satu file .zip di root repo. Hapus yang lama, sisakan hanya satu."
+            exit 1
+          fi
+
+          if [ ${#zips[@]} -eq 1 ]; then
+            rm -rf app sxv-native
+            unzip -q -o "${zips[0]}"
+            if [ -d "sxv-native" ]; then
+              cp -a sxv-native/. .
+            fi
+          fi
+
+          if [ ! -d "app" ]; then
+            echo "::error::Folder app/ tidak ditemukan. Pastikan file .zip proyek ada di root repo."
+            exit 1
+          fi
+
+      - name: Sanity check versi proyek
+        run: |
+          echo "--- baris penting AndroidManifest.xml ---"
+          grep -nE 'package=|ic_launcher|ShizukuProvider' app/src/main/AndroidManifest.xml || true
+          if grep -q 'package=' app/src/main/AndroidManifest.xml; then
+            echo "::error::Proyek LAMA terdeteksi (manifest masih memakai package=). Ganti zip dengan versi terbaru."
+            exit 1
+          fi
+          if [ ! -f app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml ]; then
+            echo "::error::Ikon launcher tidak ada, ini proyek LAMA. Ganti zip dengan versi terbaru."
+            exit 1
+          fi
+          if ! grep -q 'aidl true' app/build.gradle; then
+            echo "::error::aidl belum aktif di app/build.gradle, ini proyek LAMA. Ganti zip dengan versi terbaru."
+            exit 1
+          fi
+          echo "Proyek versi terbaru terdeteksi."
+
+      - name: Ensure gradle.properties
+        run: |
+          touch gradle.properties
+          grep -q '^android.useAndroidX' gradle.properties || echo "android.useAndroidX=true" >> gradle.properties
+          grep -q '^org.gradle.jvmargs' gradle.properties || echo "org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8" >> gradle.properties
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android SDK components (NDK + CMake)
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Setup Gradle (versi dipin, cocok dengan AGP 8.5.2)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build Debug APK
+        run: |
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+            ./gradlew assembleDebug --stacktrace
+          else
+            gradle assembleDebug --stacktrace
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SXV-Booster-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload build reports (hanya jika gagal)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            app/build/reports
+            app/.cxx
+          if-no-files-found: ignore
